@@ -257,33 +257,43 @@ void keyboard(unsigned char key, int x, int y) {
         case 'g': case 'G': showGrid = !showGrid; break;
         case 'e': case 'E': showAxes = !showAxes; break;
         case 'c': case 'C': shapes.clear(); redo_stack.clear(); break;
+
         case 's': case 'S': {
             const char *fname = "export.ppm";
             FILE *f = fopen(fname, "wb");
-            if (!f) { printf("Failed to write %s\n", fname); break; }
+            if (!f) {
+                perror("fopen error");
+                break;
+            }
+
             unsigned char *pixels = (unsigned char*)malloc(WIN_W * WIN_H * 3);
             glReadPixels(0, 0, WIN_W, WIN_H, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+
             fprintf(f, "P6\n%d %d\n255\n", WIN_W, WIN_H);
-            for (int row = WIN_H-1; row >= 0; --row) {
-            fwrite(pixels + row * WIN_W * 3, 1, WIN_W*3, f);
+            for (int row = WIN_H - 1; row >= 0; --row) {
+                fwrite(pixels + row * WIN_W * 3, 1, WIN_W * 3, f);
             }
+
             free(pixels);
             fclose(f);
-            printf("Exported %s\n", fname);
+            printf("Exportado como %s\n", fname);
             break;
         }
+
         case 'z': case 'Z': {
-        if (!shapes.empty()) { redo_stack.push_back(shapes.back()); shapes.pop_back(); }
-        break;
+            if (!shapes.empty()) { redo_stack.push_back(shapes.back()); shapes.pop_back(); }
+            break;
         }
         case 'y': case 'Y': {
-        if (!redo_stack.empty()) { shapes.push_back(redo_stack.back()); redo_stack.pop_back(); }
-        break;
+            if (!redo_stack.empty()) { shapes.push_back(redo_stack.back()); redo_stack.pop_back(); }
+            break;
         }
         case 27: exit(0); break;
     }
     glutPostRedisplay();
 }
+
+
 
 void menu_setType(int id) {
     switch (id) {
@@ -332,3 +342,99 @@ void menu_tools(int id) {
 
 void popupMenu(int value) {
 }
+
+
+void reshape(int w, int h) {
+    WIN_W = w; WIN_H = h;
+
+
+    glViewport(0,0,w,h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluOrtho2D(0, w, 0, h);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+}
+
+
+void passiveMotion(int sx, int sy) {
+    if (showCoords) {
+        Point p = screenToWorld(sx, sy);
+
+    }
+}
+
+void createMenus() {
+    int menuDraw = glutCreateMenu(menu_setType);
+    glutAddMenuEntry("Recta (Directo)", 1);
+    glutAddMenuEntry("Recta (ADD/DDA)", 2);
+    glutAddMenuEntry("Círculo (Punto Medio)", 3);
+    glutAddMenuEntry("Elipse (Punto Medio)", 4);
+
+
+    int menuColor = glutCreateMenu(menu_setColor);
+    glutAddMenuEntry("Negro", 1);
+    glutAddMenuEntry("Rojo", 2);
+    glutAddMenuEntry("Verde", 3);
+    glutAddMenuEntry("Azul", 4);
+    glutAddMenuEntry("Personalizado...", 5);
+
+
+    int menuThick = glutCreateMenu(menu_setThickness);
+    glutAddMenuEntry("1 px", 1);
+    glutAddMenuEntry("2 px", 2);
+    glutAddMenuEntry("3 px", 3);
+    glutAddMenuEntry("5 px", 4);
+
+
+    int menuTools = glutCreateMenu(menu_tools);
+    glutAddMenuEntry("Limpiar lienzo", 1);
+    glutAddMenuEntry("Borrar última figura", 2);
+    glutAddMenuEntry("Exportar imagen (PPM)", 3);
+
+
+    glutCreateMenu(popupMenu);
+    glutAddSubMenu("Dibujo", menuDraw);
+    glutAddSubMenu("Color", menuColor);
+    glutAddSubMenu("Grosor", menuThick);
+    glutAddSubMenu("Herramientas", menuTools);
+    glutAttachMenu(GLUT_RIGHT_BUTTON);
+}
+
+
+void initGL() {
+    glClearColor(1.0f,1.0f,1.0f,1.0f);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+}
+
+
+int main(int argc, char** argv) {
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
+    glutInitWindowSize(WIN_W, WIN_H);
+    glutInitWindowPosition(100,100);
+    glutCreateWindow("CAD2D - FreeGLUT Basic");
+
+
+    initGL();
+    createMenus();
+
+
+    glutDisplayFunc(display);
+    glutReshapeFunc(reshape);
+    glutMouseFunc(mouse);
+    glutPassiveMotionFunc(passiveMotion);
+    glutKeyboardFunc(keyboard);
+
+
+    printf("Controls:\n");
+    printf(" - Left click: select points (first click = p1, second click = p2).\n");
+    printf(" - Right click: popup menu to choose algorithm, color, thickness, tools.\n");
+    printf(" - Keys: G grid on/off, E axes on/off, C clear, S export PPM, Z undo, Y redo, ESC exit.\n");
+
+
+    glutMainLoop();
+    return 0;
+}
+
+
