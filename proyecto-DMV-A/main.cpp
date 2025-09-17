@@ -1,440 +1,555 @@
 #include <GL/freeglut.h>
-#include <vector>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <string>
+#include <algorithm>
+#include <vector>
+#include <fstream>
+#include <iostream>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
-int WIN_W = 1000;
-int WIN_H = 700;
-int GRID_SPACING = 25;
-bool showGrid = true;
-bool showAxes = true;
-bool showCoords = true;
+using namespace std;
 
-struct Color { unsigned char r,g,b; };
-struct Point { int x,y; };
-
-enum ShapeType { SH_LINE_DIRECT, SH_LINE_DDA, SH_CIRCLE, SH_ELLIPSE };
-
-struct Shape {
-    ShapeType type;
-    Color color;
-    int thickness;
-    Point p1, p2;
+// Estructuras de datos
+struct Point {
+    int x, y;
+    Point(int x = 0, int y = 0) : x(x), y(y) {}
 };
 
-std::vector<Shape> shapes;
-std::vector<Shape> redo_stack;
+struct Figure {
+    int type; // 0: recta directo, 1: recta DDA, 2: círculo incremental, 3: círculo PM, 4: elipse PM
+    vector<Point> points;
+    float color[3];
+    int thickness;
+};
 
-ShapeType currentType = SH_LINE_DDA;
-Color currentColor = {0,0,0};
+// Variables globales
+const int WIDTH = 800;
+const int HEIGHT = 600;
+const int GRID_SPACING = 20;
+
+vector<Figure> figures;
+vector<Figure> undoStack;
+Point tempPoints[3];
+int pointCount = 0;
+int currentTool = 0;
+float currentColor[3] = {0.0f, 0.0f, 0.0f};
 int currentThickness = 1;
+bool showGrid = true;
+bool showAxes = true;
+bool showCoords = false;
+int mouseX = 0, mouseY = 0;
 
-bool waitingSecond = false;
-Point firstPoint;
+// Prototipos de funciones
+void drawPixel(int x, int y);
+void drawLineDirect(Point p1, Point p2);
+void drawLineDDA(Point p1, Point p2);
+void drawCircleIncremental(Point center, int radius);
+void drawCircleMidpoint(Point center, int radius);
+void drawEllipseMidpoint(Point center, int rx, int ry);
+void drawGrid();
+void drawAxes();
+void displayCoordinates();
 
-
-inline Point screenToWorld(int sx, int sy) {
-    Point p;
-    p.x = sx - WIN_W/2;
-    p.y = (WIN_H/2) - sy;
-    return p;
-}
-
-inline void worldToScreen(const Point &w, int &sx, int &sy) {
-    sx = w.x + WIN_W/2;
-    sy = WIN_H/2 - w.y;
-}
-
-void plotPixelWorld(int x, int y, const Color &c, int thickness=1) {
-    int sx, sy; worldToScreen({x,y}, sx, sy);
-    glPointSize((GLfloat)thickness);
+// Implementación de algoritmos
+void drawPixel(int x, int y) {
+    glPointSize(currentThickness);
     glBegin(GL_POINTS);
-      glColor3ub(c.r, c.g, c.b);
-      glVertex2i(sx, sy);
+    glVertex2i(x, y);
+    glEnd();
+}
+
+void drawLineDirect(Point p1, Point p2) {
+    if (p1.x == p2.x) { // Línea vertical
+        int y1 = min(p1.y, p2.y);
+        int y2 = max(p1.y, p2.y);
+        for (int y = y1; y <= y2; y++) {
+            drawPixel(p1.x, y);
+        }
+        return;
+    }
+
+    float m = float(p2.y - p1.y) / (p2.x - p1.x);
+    float b = p1.y - m * p1.x;
+
+    if (abs(m) <= 1.0f) {
+        int x1 = min(p1.x, p2.x);
+        int x2 = max(p1.x, p2.x);
+        for (int x = x1; x <= x2; x++) {
+            int y = round(m * x + b);
+            drawPixel(x, y);
+        }
+    } else {
+        int y1 = min(p1.y, p2.y);
+        int y2 = max(p1.y, p2.y);
+        for (int y = y1; y <= y2; y++) {
+            int x = round((y - b) / m);
+            drawPixel(x, y);
+        }
+    }
+}
+
+void drawLineDDA(Point p1, Point p2) {
+    int dx = p2.x - p1.x;
+    int dy = p2.y - p1.y;
+    int steps = max(abs(dx), abs(dy));
+
+    if (steps == 0) {
+        drawPixel(p1.x, p1.y);
+        return;
+    }
+
+    float xInc = dx / (float)steps;
+    float yInc = dy / (float)steps;
+
+    float x = p1.x;
+    float y = p1.y;
+
+    for (int i = 0; i <= steps; i++) {
+        drawPixel(round(x), round(y));
+        x += xInc;
+        y += yInc;
+    }
+}
+
+void drawCircleIncremental(Point center, int radius) {
+    float angle = 0;
+    float angleIncrement = 1.0f / radius;
+
+    while (angle < 2 * M_PI) {
+        int x = center.x + radius * cos(angle);
+        int y = center.y + radius * sin(angle);
+        drawPixel(x, y);
+        angle += angleIncrement;
+    }
+}
+
+void drawCircleMidpoint(Point center, int radius) {
+    int x = 0;
+    int y = radius;
+    int d = 1 - radius;
+
+    while (x <= y) {
+        // Dibujar los 8 octantes
+        drawPixel(center.x + x, center.y + y);
+        drawPixel(center.x - x, center.y + y);
+        drawPixel(center.x + x, center.y - y);
+        drawPixel(center.x - x, center.y - y);
+        drawPixel(center.x + y, center.y + x);
+        drawPixel(center.x - y, center.y + x);
+        drawPixel(center.x + y, center.y - x);
+        drawPixel(center.x - y, center.y - x);
+
+        if (d < 0) {
+            d += 2 * x + 3;
+        } else {
+            d += 2 * (x - y) + 5;
+            y--;
+        }
+        x++;
+    }
+}
+
+void drawEllipseMidpoint(Point center, int rx, int ry) {
+    if (rx <= 0 || ry <= 0) return;
+
+    int x = 0;
+    int y = ry;
+    int rx2 = rx * rx;
+    int ry2 = ry * ry;
+    int twoRx2 = 2 * rx2;
+    int twoRy2 = 2 * ry2;
+
+    // Región 1
+    int p = round(ry2 - (rx2 * ry) + (0.25 * rx2));
+    int px = 0;
+    int py = twoRx2 * y;
+
+    while (px < py) {
+        drawPixel(center.x + x, center.y + y);
+        drawPixel(center.x - x, center.y + y);
+        drawPixel(center.x + x, center.y - y);
+        drawPixel(center.x - x, center.y - y);
+
+        x++;
+        px += twoRy2;
+
+        if (p < 0) {
+            p += ry2 + px;
+        } else {
+            y--;
+            py -= twoRx2;
+            p += ry2 + px - py;
+        }
+    }
+
+    // Región 2
+    p = round(ry2 * (x + 0.5) * (x + 0.5) + rx2 * (y - 1) * (y - 1) - rx2 * ry2);
+
+    while (y >= 0) {
+        drawPixel(center.x + x, center.y + y);
+        drawPixel(center.x - x, center.y + y);
+        drawPixel(center.x + x, center.y - y);
+        drawPixel(center.x - x, center.y - y);
+
+        y--;
+        py -= twoRx2;
+
+        if (p > 0) {
+            p += rx2 - py;
+        } else {
+            x++;
+            px += twoRy2;
+            p += rx2 - py + px;
+        }
+    }
+}
+
+// Funciones de dibujo auxiliares
+void drawGrid() {
+    glColor3f(0.9f, 0.9f, 0.9f);  // gris claro
+    glBegin(GL_LINES);
+    for (int x = -WIDTH/2; x <= WIDTH/2; x += GRID_SPACING) {
+        glVertex2i(x, -HEIGHT/2);
+        glVertex2i(x, HEIGHT/2);
+    }
+    for (int y = -HEIGHT/2; y <= HEIGHT/2; y += GRID_SPACING) {
+        glVertex2i(-WIDTH/2, y);
+        glVertex2i(WIDTH/2, y);
+    }
+    glEnd();
+}
+
+void drawAxes() {
+    glColor3f(0.0f, 0.0f, 0.0f);  // negro
+    glBegin(GL_LINES);
+    // Eje X
+    glVertex2i(-WIDTH/2, 0);
+    glVertex2i(WIDTH/2, 0);
+    // Eje Y
+    glVertex2i(0, -HEIGHT/2);
+    glVertex2i(0, HEIGHT/2);
     glEnd();
 }
 
 
-void drawLineDirect(const Point &p1, const Point &p2, const Color &c, int thickness) {
-    long dx = p2.x - p1.x;
-    long dy = p2.y - p1.y;
-    if (dx==0) {
-        int x = p1.x;
-        int y0 = std::min(p1.y,p2.y);
-        int y1 = std::max(p1.y,p2.y);
-        for (int y=y0;y<=y1;++y) plotPixelWorld(x,y,c,thickness);
-        return;
+void displayCoordinates() {
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluOrtho2D(0, WIDTH, HEIGHT, 0);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glColor3f(1.0f, 1.0f, 1.0f);
+    glRasterPos2i(10, 20);
+    string coords = "X: " + to_string(mouseX - WIDTH/2) + " Y: " + to_string(HEIGHT/2 - mouseY);
+    for (char c : coords) {
+        glutBitmapCharacter(GLUT_BITMAP_9_BY_15, c);
     }
-    double m = (double)dy / (double)dx;
-    double b = p1.y - m * p1.x;
-    if (std::abs(m) <= 1.0) {
-        int x0 = std::min(p1.x,p2.x);
-        int x1 = std::max(p1.x,p2.x);
-        for (int x=x0;x<=x1;++x) {
-            int y = (int)std::round(m * x + b);
-            plotPixelWorld(x,y,c,thickness);
-        }
-    } else {
-        int y0 = std::min(p1.y,p2.y);
-        int y1 = std::max(p1.y,p2.y);
-        for (int y=y0;y<=y1;++y) {
-            int x = (int)std::round((y - b) / m);
-            plotPixelWorld(x,y,c,thickness);
-        }
-    }
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
 }
 
-void drawLineDDA(const Point &p1, const Point &p2, const Color &c, int thickness) {
-    int dx = p2.x - p1.x;
-    int dy = p2.y - p1.y;
-    int steps = std::max(std::abs(dx), std::abs(dy));
-    if (steps==0) { plotPixelWorld(p1.x,p1.y,c,thickness); return; }
-    double xinc = (double)dx / steps;
-    double yinc = (double)dy / steps;
-    double x = p1.x; double y = p1.y;
-    for (int i=0;i<=steps;++i) {
-        plotPixelWorld((int)std::round(x),(int)std::round(y),c,thickness);
-        x += xinc; y += yinc;
-    }
-}
-
-void drawCircleMidpoint(const Point &center, int radius, const Color &c, int thickness) {
-    int x = 0;
-    int y = radius;
-    int d = 1 - radius;
-    auto plot8 = [&](int xc, int yc, int x, int y){
-        plotPixelWorld(xc + x, yc + y, c, thickness);
-        plotPixelWorld(xc - x, yc + y, c, thickness);
-        plotPixelWorld(xc + x, yc - y, c, thickness);
-        plotPixelWorld(xc - x, yc - y, c, thickness);
-        plotPixelWorld(xc + y, yc + x, c, thickness);
-        plotPixelWorld(xc - y, yc + x, c, thickness);
-        plotPixelWorld(xc + y, yc - x, c, thickness);
-        plotPixelWorld(xc - y, yc - x, c, thickness);
-    };
-    while (x <= y) {
-        plot8(center.x, center.y, x, y);
-        if (d < 0) {
-            d += 2*x + 3;
-        } else {
-            d += 2*(x - y) + 5;
-            --y;
-        }
-        ++x;
-    }
-}
-void drawEllipseMidpoint(const Point &center, int rx, int ry, const Color &c, int thickness)
-{
-    int rx2 = rx*rx;
-    int ry2 = ry*ry;
-    int x = 0;
-    int y = ry;
-    long two_rx2 = 2*rx2;
-    long two_ry2 = 2*ry2;
-
-
-    long px = 0;
-    long py = two_rx2 * y;
-
-
-    long p = (long)std::round(ry2 - (rx2 * ry) + (0.25 * rx2));
-    while (px < py) {
-    plotPixelWorld(center.x + x, center.y + y, c, thickness);
-    plotPixelWorld(center.x - x, center.y + y, c, thickness);
-    plotPixelWorld(center.x + x, center.y - y, c, thickness);
-    plotPixelWorld(center.x - x, center.y - y, c, thickness);
-
-
-    ++x;
-    px += two_ry2;
-    if (p < 0) {
-    p += ry2 + px;
-    } else {
-    --y;
-    py -= two_rx2;
-    p += ry2 + px - py;
-    }
-}
-p = (long)std::round(ry2*(x+0.5)*(x+0.5) + rx2*(y-1)*(y-1) - rx2*ry2);
-while (y >= 0) {
-    plotPixelWorld(center.x + x, center.y + y, c, thickness);
-    plotPixelWorld(center.x - x, center.y + y, c, thickness);
-    plotPixelWorld(center.x + x, center.y - y, c, thickness);
-    plotPixelWorld(center.x - x, center.y - y, c, thickness);
-
-
-    --y;
-    py -= two_rx2;
-    if (p > 0) {
-    p += rx2 - py;
-    } else {
-    ++x;
-    px += two_ry2;
-    p += rx2 - py + px;
-    }
-            }
-}
-void drawGridAndAxes() {
-    if (showGrid) {
-        glPointSize(1.0f);
-    for (int gx = -WIN_W/2; gx <= WIN_W/2; gx += GRID_SPACING) {
-        for (int y = -WIN_H/2; y <= WIN_H/2; ++y) {
-            Color cg = {220,220,220};
-            plotPixelWorld(gx,y,cg,1);
-            }
-        }
-    }
-    if (showAxes) {
-    Color ca = {0,0,0};
-    for (int x = -WIN_W/2; x <= WIN_W/2; ++x) plotPixelWorld(x,0,ca,1);
-    for (int y = -WIN_H/2; y <= WIN_H/2; ++y) plotPixelWorld(0,y,ca,1);
-    }
-}
-void redrawScene();
-
-
+// Callbacks de OpenGL
 void display() {
     glClear(GL_COLOR_BUFFER_BIT);
 
+    if (showGrid) drawGrid();
+    if (showAxes) drawAxes();
 
-    drawGridAndAxes();
+    // Dibujar todas las figuras
+    for (const auto& figure : figures) {
+        glColor3fv(figure.color);
+        currentThickness = figure.thickness;
 
-
-    for (const Shape &s : shapes) {
-        switch (s.type) {
-            case SH_LINE_DIRECT: drawLineDirect(s.p1,s.p2,s.color,s.thickness); break;
-            case SH_LINE_DDA: drawLineDDA(s.p1,s.p2,s.color,s.thickness); break;
-            case SH_CIRCLE: {
-                int dx = s.p2.x - s.p1.x;
-                int dy = s.p2.y - s.p1.y;
-                int r = (int)std::round(std::sqrt(dx*dx + dy*dy));
-                drawCircleMidpoint(s.p1, r, s.color, s.thickness);
+        switch (figure.type) {
+            case 0: // Recta directo
+                if (figure.points.size() >= 2)
+                    drawLineDirect(figure.points[0], figure.points[1]);
                 break;
+            case 1: // Recta DDA
+                if (figure.points.size() >= 2)
+                    drawLineDDA(figure.points[0], figure.points[1]);
+                break;
+            case 2: // Círculo incremental
+                if (figure.points.size() >= 2) {
+                    int dx = figure.points[1].x - figure.points[0].x;
+                    int dy = figure.points[1].y - figure.points[0].y;
+                    int radius = (int)sqrt(dx*dx + dy*dy);
+                    drawCircleIncremental(figure.points[0], radius);
                 }
-                case SH_ELLIPSE: {
-                    int rx = std::abs(s.p2.x - s.p1.x);
-                    int ry = std::abs(s.p2.y - s.p1.y);
-                    drawEllipseMidpoint(s.p1, rx, ry, s.color, s.thickness);
-                    break;
-                    }
-            }
+                break;
+            case 3: // Círculo PM
+                if (figure.points.size() >= 2) {
+                    int dx = figure.points[1].x - figure.points[0].x;
+                    int dy = figure.points[1].y - figure.points[0].y;
+                    int radius = (int)sqrt(dx*dx + dy*dy);
+                    drawCircleMidpoint(figure.points[0], radius);
+                }
+                break;
+            case 4: // Elipse PM
+                if (figure.points.size() >= 3) {
+                    int rx = abs(figure.points[1].x - figure.points[0].x);
+                    int ry = abs(figure.points[2].y - figure.points[0].y);
+                    drawEllipseMidpoint(figure.points[0], rx, ry);
+                }
+                break;
+        }
     }
 
+    // Dibujar puntos temporales
+    glColor3f(1.0f, 0.0f, 0.0f);
+    glPointSize(5);
+    glBegin(GL_POINTS);
+    for (int i = 0; i < pointCount; i++) {
+        glVertex2i(tempPoints[i].x, tempPoints[i].y);
+    }
+    glEnd();
+
+    if (showCoords) displayCoordinates();
 
     glutSwapBuffers();
 }
-void commitShape(const Shape &s) {
-    shapes.push_back(s);
-    redo_stack.clear();
+
+void mouse(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
+        mouseX = x; mouseY = y;
+
+        // Convertir coordenadas de ventana a coordenadas OpenGL
+        Point p(x - WIDTH/2, HEIGHT/2 - y);
+
+        if (pointCount < 3) {
+            tempPoints[pointCount++] = p;
+        }
+
+        // Verificar si tenemos suficientes puntos para dibujar
+        if ((currentTool <= 1 && pointCount == 2) || // Rectas
+            ((currentTool == 2 || currentTool == 3) && pointCount == 2) || // Círculos
+            (currentTool == 4 && pointCount == 3)) { // Elipses
+
+            Figure newFig;
+            newFig.type = currentTool;
+            newFig.thickness = currentThickness;
+            memcpy(newFig.color, currentColor, sizeof(currentColor));
+
+            for (int i = 0; i < pointCount; i++) {
+                newFig.points.push_back(tempPoints[i]);
+            }
+
+            figures.push_back(newFig);
+            pointCount = 0;
+        }
+
+        glutPostRedisplay();
+    }
 }
 
+void savePNG(const char* filename, int width, int height) {
+    vector<unsigned char> pixels(3 * width * height);
+    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
 
-void mouse(int button, int state, int sx, int sy) {
-    if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
-        Point w = screenToWorld(sx, sy);
-        if (!waitingSecond) {
-            firstPoint = w;
-            waitingSecond = true;
-        } else {
-            Shape s;
-            s.type = currentType;
-            s.color = currentColor;
-            s.thickness = currentThickness;
-            s.p1 = firstPoint;
-            s.p2 = w;
-            commitShape(s);
-            waitingSecond = false;
-            glutPostRedisplay();
-        }
+    // Invertir en vertical
+    vector<unsigned char> flipped(3 * width * height);
+    for (int y = 0; y < height; y++) {
+        memcpy(&flipped[y * width * 3],
+               &pixels[(height - 1 - y) * width * 3],
+               width * 3);
+    }
+
+    int success = stbi_write_png(filename, width, height, 3, flipped.data(), width * 3);
+    if (success) {
+        cout << "Imagen exportada como " << filename << endl;
+    } else {
+        cout << "Error al exportar PNG" << endl;
     }
 }
 
 void keyboard(unsigned char key, int x, int y) {
     switch (key) {
-        case 'g': case 'G': showGrid = !showGrid; break;
-        case 'e': case 'E': showAxes = !showAxes; break;
-        case 'c': case 'C': shapes.clear(); redo_stack.clear(); break;
-
-        case 's': case 'S': {
-            const char *fname = "export.ppm";
-            FILE *f = fopen(fname, "wb");
-            if (!f) {
-                perror("fopen error");
-                break;
+        case 'g': case 'G':
+            showGrid = !showGrid;
+            break;
+        case 'e': case 'E':
+            showAxes = !showAxes;
+            break;
+        case 'c': case 'C':
+            figures.clear();
+            pointCount = 0;
+            break;
+        case 'z': case 'Z':
+            if (!figures.empty()) {
+                undoStack.push_back(figures.back());
+                figures.pop_back();
             }
-
-            unsigned char *pixels = (unsigned char*)malloc(WIN_W * WIN_H * 3);
-            glReadPixels(0, 0, WIN_W, WIN_H, GL_RGB, GL_UNSIGNED_BYTE, pixels);
-
-            fprintf(f, "P6\n%d %d\n255\n", WIN_W, WIN_H);
-            for (int row = WIN_H - 1; row >= 0; --row) {
-                fwrite(pixels + row * WIN_W * 3, 1, WIN_W * 3, f);
+            break;
+        case 'y': case 'Y':
+            if (!undoStack.empty()) {
+                figures.push_back(undoStack.back());
+                undoStack.pop_back();
             }
+            break;
+        case 's': case 'S':
+        cout << "Exportando imagen..." << endl;
+        savePNG("C:/Users/Usuario/Desktop/captura.png", WIDTH, HEIGHT);
+   // ✅ Exportar como PNG
+        break;
 
-            free(pixels);
-            fclose(f);
-            printf("Exportado como %s\n", fname);
-            break;
-        }
 
-        case 'z': case 'Z': {
-            if (!shapes.empty()) { redo_stack.push_back(shapes.back()); shapes.pop_back(); }
+        }
+        glutPostRedisplay();
+}
+
+// Menús
+void mainMenu(int value) {
+    // Menú principal ya manejado por submenús
+}
+
+void drawingMenu(int value) {
+    currentTool = value;
+    pointCount = 0;
+    cout << "Tool selected: " << value << endl;
+}
+
+void colorMenu(int value) {
+    switch (value) {
+        case 0: currentColor[0] = 0.0f; currentColor[1] = 0.0f; currentColor[2] = 0.0f; break; // Negro
+        case 1: currentColor[0] = 1.0f; currentColor[1] = 0.0f; currentColor[2] = 0.0f; break; // Rojo
+        case 2: currentColor[0] = 0.0f; currentColor[1] = 1.0f; currentColor[2] = 0.0f; break; // Verde
+        case 3: currentColor[0] = 0.0f; currentColor[1] = 0.0f; currentColor[2] = 1.0f; break; // Azul
+        case 4: { // Personalizado
+            int r, g, b;
+            cout << "Ingrese color personalizado (RGB 0-255): ";
+            cin >> r >> g >> b;
+            currentColor[0] = r / 255.0f;
+            currentColor[1] = g / 255.0f;
+            currentColor[2] = b / 255.0f;
             break;
         }
-        case 'y': case 'Y': {
-            if (!redo_stack.empty()) { shapes.push_back(redo_stack.back()); redo_stack.pop_back(); }
+    }
+}
+
+void thicknessMenu(int value) {
+    currentThickness = value;
+}
+
+void viewMenu(int value) {
+    switch (value) {
+        case 0: showGrid = !showGrid; break;
+        case 1: showAxes = !showAxes; break;
+        case 2: showCoords = !showCoords; break;
+    }
+}
+
+void toolsMenu(int value) {
+    switch (value) {
+        case 0: figures.clear(); pointCount = 0; break;  // Limpiar lienzo
+        case 1: // Borrar última figura
+            if (!figures.empty()) {
+                undoStack.push_back(figures.back());
+                figures.pop_back();
+            }
             break;
-        }
-        case 27: exit(0); break;
+        case 2: // Exportar imagen
+            savePNG("captura.png", WIDTH, HEIGHT);
+            break;
     }
     glutPostRedisplay();
 }
 
 
-
-void menu_setType(int id) {
-    switch (id) {
-        case 1: currentType = SH_LINE_DIRECT; break;
-        case 2: currentType = SH_LINE_DDA; break;
-        case 3: currentType = SH_CIRCLE; break;
-        case 4: currentType = SH_ELLIPSE; break;
+void helpMenu(int value) {
+    if (value == 0) {
+        cout << "Atajos de teclado:" << endl;
+        cout << "G - Mostrar/Ocultar cuadrícula" << endl;
+        cout << "E - Mostrar/Ocultar ejes" << endl;
+        cout << "C - Limpiar lienzo" << endl;
+        cout << "Z - Deshacer" << endl;
+        cout << "Y - Rehacer" << endl;
+        cout << "S - Exportar imagen" << endl;
     }
 }
 
-
-void menu_setColor(int id) {
-    switch (id) {
-        case 1: currentColor = {0,0,0}; break;
-        case 2: currentColor = {255,0,0}; break;
-        case 3: currentColor = {0,255,0}; break;
-        case 4: currentColor = {0,0,255}; break;
-        case 5: {
-            int r,g,b; printf("Enter R G B (0-255): "); if (scanf("%d %d %d", &r,&g,&b)==3) currentColor = {(unsigned char)r,(unsigned char)g,(unsigned char)b};
-            break;
-        }
-    }
-}
-
-
-void menu_setThickness(int id) {
-    switch (id) {
-        case 1: currentThickness = 1; break;
-        case 2: currentThickness = 2; break;
-        case 3: currentThickness = 3; break;
-        case 4: currentThickness = 5; break;
-    }
-}
-
-
-void menu_tools(int id) {
-    switch (id) {
-        case 1: shapes.clear(); redo_stack.clear(); break;
-        case 2: if (!shapes.empty()) { shapes.pop_back(); } break;
-        case 3: {
-            keyboard('s',0,0); break; }
-    }
-    glutPostRedisplay();
-}
-
-
-void popupMenu(int value) {
-}
-
-
-void reshape(int w, int h) {
-    WIN_W = w; WIN_H = h;
-
-
-    glViewport(0,0,w,h);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluOrtho2D(0, w, 0, h);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-}
-
-
-void passiveMotion(int sx, int sy) {
-    if (showCoords) {
-        Point p = screenToWorld(sx, sy);
-
-    }
-}
-
-void createMenus() {
-    int menuDraw = glutCreateMenu(menu_setType);
-    glutAddMenuEntry("Recta (Directo)", 1);
-    glutAddMenuEntry("Recta (ADD/DDA)", 2);
-    glutAddMenuEntry("C�rculo (Punto Medio)", 3);
+void createMenu() {
+    int drawSubMenu = glutCreateMenu(drawingMenu);
+    glutAddMenuEntry("Recta (Directo)", 0);
+    glutAddMenuEntry("Recta (DDA)", 1);
+    glutAddMenuEntry("Circulo (Incremental)", 2);
+    glutAddMenuEntry("Circulo (Punto Medio)", 3);
     glutAddMenuEntry("Elipse (Punto Medio)", 4);
 
+    int colorSubMenu = glutCreateMenu(colorMenu);
+    glutAddMenuEntry("Negro", 0);
+    glutAddMenuEntry("Rojo", 1);
+    glutAddMenuEntry("Verde", 2);
+    glutAddMenuEntry("Azul", 3);
+    glutAddMenuEntry("Personalizado...", 4);
 
-    int menuColor = glutCreateMenu(menu_setColor);
-    glutAddMenuEntry("Negro", 1);
-    glutAddMenuEntry("Rojo", 2);
-    glutAddMenuEntry("Verde", 3);
-    glutAddMenuEntry("Azul", 4);
-    glutAddMenuEntry("Personalizado...", 5);
-
-
-    int menuThick = glutCreateMenu(menu_setThickness);
+    int thicknessSubMenu = glutCreateMenu(thicknessMenu);
     glutAddMenuEntry("1 px", 1);
     glutAddMenuEntry("2 px", 2);
     glutAddMenuEntry("3 px", 3);
-    glutAddMenuEntry("5 px", 4);
+    glutAddMenuEntry("5 px", 5);
 
+    int viewSubMenu = glutCreateMenu(viewMenu);
+    glutAddMenuEntry("Mostrar/Ocultar cuadricula", 0);
+    glutAddMenuEntry("Mostrar/Ocultar ejes", 1);
+    glutAddMenuEntry("Mostrar coordenadas", 2);
 
-    int menuTools = glutCreateMenu(menu_tools);
-    glutAddMenuEntry("Limpiar lienzo", 1);
-    glutAddMenuEntry("Borrar �ltima figura", 2);
-    glutAddMenuEntry("Exportar imagen (PPM)", 3);
+    int toolsSubMenu = glutCreateMenu(toolsMenu);
+    glutAddMenuEntry("Limpiar lienzo", 0);
+    glutAddMenuEntry("Deshacer", 1);
+    glutAddMenuEntry("Exportar imagen (PNG)", 2);
 
+    int helpSubMenu = glutCreateMenu(helpMenu);
+    glutAddMenuEntry("Atajos de teclado", 0);
+    glutAddMenuEntry("Acerca de", 1);
 
-    glutCreateMenu(popupMenu);
-    glutAddSubMenu("Dibujo", menuDraw);
-    glutAddSubMenu("Color", menuColor);
-    glutAddSubMenu("Grosor", menuThick);
-    glutAddSubMenu("Herramientas", menuTools);
+    glutCreateMenu(mainMenu);
+    glutAddSubMenu("Dibujo", drawSubMenu);
+    glutAddSubMenu("Color", colorSubMenu);
+    glutAddSubMenu("Grosor", thicknessSubMenu);
+    glutAddSubMenu("Vista", viewSubMenu);
+    glutAddSubMenu("Herramientas", toolsSubMenu);
+    glutAddSubMenu("Ayuda", helpSubMenu);
+
     glutAttachMenu(GLUT_RIGHT_BUTTON);
 }
 
-
-void initGL() {
-    glClearColor(1.0f,1.0f,1.0f,1.0f);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+void init() {
+    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);  // FONDO BLANCO
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluOrtho2D(-WIDTH/2, WIDTH/2, -HEIGHT/2, HEIGHT/2);
+    glMatrixMode(GL_MODELVIEW);
 }
 
 
 int main(int argc, char** argv) {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-    glutInitWindowSize(WIN_W, WIN_H);
-    glutInitWindowPosition(100,100);
-    glutCreateWindow("CAD2D - FreeGLUT Basic");
+    glutInitWindowSize(WIDTH, HEIGHT);
+    glutInitWindowPosition(100, 100);
+    glutCreateWindow("CAD 2D Basic - OpenGL/FreeGLUT");
 
-
-    initGL();
-    createMenus();
-
+    init();
+    createMenu();
 
     glutDisplayFunc(display);
-    glutReshapeFunc(reshape);
     glutMouseFunc(mouse);
-    glutPassiveMotionFunc(passiveMotion);
     glutKeyboardFunc(keyboard);
+    glutPassiveMotionFunc([](int x, int y) {
+        mouseX = x; mouseY = y;
+        if (showCoords) glutPostRedisplay();
+    });
 
-
-    printf("Controls:\n");
-    printf(" - Left click: select points (first click = p1, second click = p2).\n");
-    printf(" - Right click: popup menu to choose algorithm, color, thickness, tools.\n");
-    printf(" - Keys: G grid on/off, E axes on/off, C clear, S export PPM, Z undo, Y redo, ESC exit.\n");
-
+    cout << "CAD 2D Basic inicializado" << endl;
+    cout << "Click derecho para menu contextual" << endl;
+    cout << "Atajos: G (grid), E (ejes), C (clear), Z (undo), Y (redo)" << endl;
 
     glutMainLoop();
     return 0;
 }
-
-
